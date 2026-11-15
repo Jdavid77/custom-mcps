@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"net/http"
@@ -9,7 +10,8 @@ import (
 	"time"
 )
 
-const akeylessAPI = "https://api.akeyless.io"
+// akeylessAPI can point at a self-hosted Akeyless gateway instead of the SaaS API.
+var akeylessAPI = cmp.Or(os.Getenv("AKEYLESS_API_URL"), "https://api.akeyless.io")
 
 var akeylessClient = &http.Client{Timeout: 30 * time.Second}
 

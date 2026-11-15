@@ -4,7 +4,7 @@ Small MCP servers for the home-cluster kagent agents. Each folder is one server,
 
 | MCP | Tools | Env |
 |---|---|---|
-| `akeyless` | `list_items`, `find_unused_secrets` | `AKEYLESS_ACCESS_ID`, `AKEYLESS_ACCESS_KEY`; needs a ServiceAccount that can list ExternalSecrets and PushSecrets |
+| `akeyless` | `list_items`, `find_unused_secrets` | `AKEYLESS_ACCESS_ID`, `AKEYLESS_ACCESS_KEY`, optional `AKEYLESS_API_URL` (default `https://api.akeyless.io`); needs a ServiceAccount that can list ExternalSecrets and PushSecrets |
 | `pushover` | `send_notification` | `PUSHOVER_TOKEN`, `PUSHOVER_USER_KEY` |
 
 Build one locally:
