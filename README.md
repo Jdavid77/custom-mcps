@@ -16,4 +16,4 @@ Build one locally:
 docker build --build-arg MCP=akeyless -t akeyless-mcp .
 ```
 
-To add a new MCP, create `<name>/main.go` and add a `<name>` path filter in `.github/workflows/build.yaml`. CI only builds the MCPs whose folder changed (or all of them when `go.mod`, `go.sum`, the `Dockerfile` or the workflow change). Pushes to `main` are tagged `latest` and `vYYYY.MM.DD.HHMMSS` (commit time, UTC).
+To add a new MCP, create `<name>/main.go` and add a `<name>` path filter in `.github/workflows/build.yaml`. CI only builds the MCPs whose folder changed (or all of them when `go.mod`, `go.sum` or the `Dockerfile` change). Each push to `main` pushes the image as `latest` and `vYYYY.MM.DD.NN`, counting on from the newest tag already in GHCR.

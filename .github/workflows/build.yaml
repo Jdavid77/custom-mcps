@@ -4,6 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
+    branches: [main]
 
 jobs:
   changes:
@@ -23,8 +24,8 @@ jobs:
         id: filter
         with:
           filters: |
-            akeyless: [akeyless/**, go.mod, go.sum, Dockerfile, .github/workflows/build.yaml]
-            pushover: [pushover/**, go.mod, go.sum, Dockerfile, .github/workflows/build.yaml]
+            akeyless: [akeyless/**, go.mod, go.sum, Dockerfile]
+            pushover: [pushover/**, go.mod, go.sum, Dockerfile]
 
   build:
     needs: changes
@@ -51,10 +52,25 @@ jobs:
           version: v2.15.0
           args: ./${{ matrix.mcp }}/...
 
-      # Commit time in UTC, so tags sort in order and a rerun reuses the same tag
-      - name: Release tag
-        id: tag
-        run: echo "tag=$(TZ=UTC git log -1 --format=%cd --date=format-local:v%Y.%m.%d.%H%M%S)" >> "$GITHUB_OUTPUT"
+      # The image's own tags hold the counter, so each MCP counts separately and no git tags are needed
+      - name: Latest image tag
+        id: latest
+        env:
+          IMAGE: jdavid77/${{ matrix.mcp }}-mcp
+        run: |
+          token=$(curl -s "https://ghcr.io/token?scope=repository:$IMAGE:pull" | jq -r .token)
+          tag=$(curl -s -H "Authorization: Bearer $token" "https://ghcr.io/v2/$IMAGE/tags/list?n=1000" \
+            | jq -r '.tags[]?' | grep -E '^v[0-9]{4}\.[0-9]{2}\.[0-9]{2}\.[0-9]{2}$' | sort -V | tail -1 || true)
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      - name: Generate release tag
+        id: release
+        uses: amitsingh-007/next-release-tag@4c9de5e054a72cd4c2cb1db76d561cd19e2ea69a # v6.7.0
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          tag_prefix: 'v'
+          tag_template: 'yyyy.mm.dd.i'
+          previous_tag: ${{ steps.latest.outputs.tag }}
 
       - name: Set up Buildx
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
@@ -76,7 +92,6 @@ jobs:
           push: ${{ github.event_name == 'push' }}
           tags: |
             ghcr.io/jdavid77/${{ matrix.mcp }}-mcp:latest
-            ghcr.io/jdavid77/${{ matrix.mcp }}-mcp:${{ steps.tag.outputs.tag }}
-            ghcr.io/jdavid77/${{ matrix.mcp }}-mcp:sha-${{ github.sha }}
+            ghcr.io/jdavid77/${{ matrix.mcp }}-mcp:${{ steps.release.outputs.next_release_tag }}
           cache-from: type=gha,scope=${{ matrix.mcp }}
           cache-to: type=gha,mode=max,scope=${{ matrix.mcp }}

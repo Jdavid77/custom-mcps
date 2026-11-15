@@ -48,7 +48,7 @@ func send(ctx context.Context, _ *mcp.CallToolRequest, in notification) (*mcp.Ca
 	if err != nil {
 		return nil, result{}, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 500))
 		return nil, result{}, fmt.Errorf("pushover returned %d: %s", resp.StatusCode, body)
