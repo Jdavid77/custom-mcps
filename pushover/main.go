@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -38,7 +39,12 @@ func send(ctx context.Context, _ *mcp.CallToolRequest, in notification) (*mcp.Ca
 		"title":   {truncate(in.Title, 250)},
 		"message": {truncate(in.Message, 1024)},
 	}
-	resp, err := client.PostForm("https://api.pushover.net/1/messages.json", form)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://api.pushover.net/1/messages.json", strings.NewReader(form.Encode()))
+	if err != nil {
+		return nil, result{}, err
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, result{}, err
 	}
@@ -56,7 +62,8 @@ func main() {
 		Name:        "send_notification",
 		Description: "Send a push notification to the cluster owner's phone via Pushover.",
 	}, send)
-	handler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, &mcp.StreamableHTTPOptions{Stateless: true})
-	http.Handle("/mcp", handler)
-	log.Fatal(http.ListenAndServe(":8080", nil))
+	mux := http.NewServeMux()
+	mux.Handle("/mcp", mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, &mcp.StreamableHTTPOptions{Stateless: true}))
+	srv := &http.Server{Addr: ":8080", Handler: mux, ReadHeaderTimeout: 10 * time.Second}
+	log.Fatal(srv.ListenAndServe())
 }

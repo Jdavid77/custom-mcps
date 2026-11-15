@@ -6,21 +6,23 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 const (
-	akeyless = "https://api.akeyless.io"
-	k8s      = "https://kubernetes.default.svc"
-	sa       = "/var/run/secrets/kubernetes.io/serviceaccount"
+	akeylessAPI = "https://api.akeyless.io"
+	k8sAPI      = "https://kubernetes.default.svc"
+	saDir       = "/var/run/secrets/kubernetes.io/serviceaccount"
 )
 
 type item struct {
@@ -28,66 +30,102 @@ type item struct {
 	Type string `json:"type"`
 }
 
-var client = &http.Client{Timeout: 30 * time.Second}
+var akeylessClient = &http.Client{Timeout: 30 * time.Second}
 
-func do(ctx context.Context, c *http.Client, method, url string, body any, header http.Header, out any) error {
-	var r io.Reader
-	if body != nil {
-		b, err := json.Marshal(body)
-		if err != nil {
-			return err
-		}
-		r = bytes.NewReader(b)
-	}
-	req, err := http.NewRequestWithContext(ctx, method, url, r)
+// bearer adds the ServiceAccount token, re-read per request since the kubelet rotates it.
+type bearer struct{ next http.RoundTripper }
+
+func (b bearer) RoundTrip(req *http.Request) (*http.Response, error) {
+	token, err := os.ReadFile(saDir + "/token")
 	if err != nil {
-		return err
+		return nil, err
 	}
-	if header != nil {
-		req.Header = header
+	req = req.Clone(req.Context())
+	req.Header.Set("Authorization", "Bearer "+string(token))
+	return b.next.RoundTrip(req)
+}
+
+var k8sClient = sync.OnceValues(func() (*http.Client, error) {
+	ca, err := os.ReadFile(saDir + "/ca.crt")
+	if err != nil {
+		return nil, err
 	}
-	req.Header.Set("Content-Type", "application/json")
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(ca) {
+		return nil, errors.New("no certificates in " + saDir + "/ca.crt")
+	}
+	transport := &http.Transport{TLSClientConfig: &tls.Config{RootCAs: pool}}
+	return &http.Client{Timeout: 30 * time.Second, Transport: bearer{transport}}, nil
+})
+
+// send runs req and decodes the JSON response into out.
+func send(c *http.Client, req *http.Request, out any) error {
 	resp, err := c.Do(req)
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {
-		b, _ := io.ReadAll(io.LimitReader(resp.Body, 500))
-		return fmt.Errorf("%s returned %d: %s", url, resp.StatusCode, b)
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 500))
+		return fmt.Errorf("%s returned %d: %s", req.URL, resp.StatusCode, body)
 	}
 	return json.NewDecoder(resp.Body).Decode(out)
 }
 
-// items lists every Akeyless item under path. list-items returns one folder
-// level (items + subfolders), so walk the tree.
-func items(ctx context.Context, path string) ([]item, error) {
+func akeylessPost(ctx context.Context, endpoint string, body, out any) error {
+	b, err := json.Marshal(body)
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, akeylessAPI+endpoint, bytes.NewReader(b))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	return send(akeylessClient, req, out)
+}
+
+func k8sList(ctx context.Context, version, resource string, out any) error {
+	c, err := k8sClient()
+	if err != nil {
+		return err
+	}
+	url := fmt.Sprintf("%s/apis/external-secrets.io/%s/%s", k8sAPI, version, resource)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return err
+	}
+	return send(c, req, out)
+}
+
+// listAkeylessItems lists every Akeyless item under path, in API order.
+// list-items returns one folder level (items + subfolders), so walk the tree.
+func listAkeylessItems(ctx context.Context, path string) ([]item, error) {
 	var auth struct {
 		Token string `json:"token"`
 	}
-	err := do(ctx, client, http.MethodPost, akeyless+"/auth", map[string]string{
+	err := akeylessPost(ctx, "/auth", map[string]string{
 		"access-type": "access_key",
 		"access-id":   os.Getenv("AKEYLESS_ACCESS_ID"),
 		"access-key":  os.Getenv("AKEYLESS_ACCESS_KEY"),
-	}, nil, &auth)
+	}, &auth)
 	if err != nil {
 		return nil, err
 	}
-	found, seen, folders := map[string]item{}, map[string]bool{}, []string{path}
-	for len(folders) > 0 {
-		folder := folders[len(folders)-1]
-		folders = folders[:len(folders)-1]
-		if seen[folder] {
-			continue
-		}
-		seen[folder] = true
-		page := ""
+	var found []item
+	foundNames := map[string]bool{}
+	// queued holds every folder ever pushed, so a folder is walked once
+	pending, queued := []string{path}, map[string]bool{path: true}
+	for len(pending) > 0 {
+		folder := pending[len(pending)-1]
+		pending = pending[:len(pending)-1]
+		pageToken := ""
 		for {
 			body := map[string]string{"token": auth.Token, "path": folder}
-			if page != "" {
-				body["pagination-token"] = page
+			if pageToken != "" {
+				body["pagination-token"] = pageToken
 			}
-			var out struct {
+			var page struct {
 				Items []struct {
 					Name string `json:"item_name"`
 					Type string `json:"item_type"`
@@ -95,53 +133,35 @@ func items(ctx context.Context, path string) ([]item, error) {
 				Folders  []string `json:"folders"`
 				NextPage string   `json:"next_page"`
 			}
-			if err := do(ctx, client, http.MethodPost, akeyless+"/list-items", body, nil, &out); err != nil {
+			if err := akeylessPost(ctx, "/list-items", body, &page); err != nil {
 				return nil, err
 			}
 			added := false
-			for _, i := range out.Items {
-				if _, ok := found[i.Name]; !ok {
-					found[i.Name] = item{i.Name, i.Type}
+			for _, it := range page.Items {
+				if !foundNames[it.Name] {
+					foundNames[it.Name] = true
+					found = append(found, item{it.Name, it.Type})
 					added = true
 				}
 			}
-			for _, f := range out.Folders {
-				if !seen[f] {
-					folders = append(folders, f)
+			for _, sub := range page.Folders {
+				if !queued[sub] {
+					queued[sub] = true
+					pending = append(pending, sub)
 					added = true
 				}
 			}
-			page = out.NextPage
+			pageToken = page.NextPage
 			// next_page can come back set even on the last page
-			if page == "" || !added {
+			if pageToken == "" || !added {
 				break
 			}
 		}
 	}
-	list := make([]item, 0, len(found))
-	for _, i := range found {
-		list = append(list, i)
-	}
-	return list, nil
+	return found, nil
 }
 
-func k8sList(ctx context.Context, version, resource string, out any) error {
-	token, err := os.ReadFile(sa + "/token")
-	if err != nil {
-		return err
-	}
-	ca, err := os.ReadFile(sa + "/ca.crt")
-	if err != nil {
-		return err
-	}
-	pool := x509.NewCertPool()
-	pool.AppendCertsFromPEM(ca)
-	c := &http.Client{Timeout: 30 * time.Second, Transport: &http.Transport{TLSClientConfig: &tls.Config{RootCAs: pool}}}
-	url := fmt.Sprintf("%s/apis/external-secrets.io/%s/%s", k8s, version, resource)
-	return do(ctx, c, http.MethodGet, url, nil, http.Header{"Authorization": {"Bearer " + string(token)}}, out)
-}
-
-func norm(key string) string {
+func normalizeKey(key string) string {
 	return "/" + strings.TrimLeft(key, "/")
 }
 
@@ -157,8 +177,8 @@ func listItems(ctx context.Context, _ *mcp.CallToolRequest, in listIn) (*mcp.Cal
 	if in.Path == "" {
 		in.Path = "/"
 	}
-	list, err := items(ctx, in.Path)
-	return nil, listOut{Items: list}, err
+	found, err := listAkeylessItems(ctx, in.Path)
+	return nil, listOut{Items: found}, err
 }
 
 type unusedOut struct {
@@ -169,7 +189,7 @@ type unusedOut struct {
 
 func findUnused(ctx context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, unusedOut, error) {
 	used := map[string]bool{}
-	var es struct {
+	var externalSecrets struct {
 		Items []struct {
 			Spec struct {
 				Data []struct {
@@ -185,20 +205,20 @@ func findUnused(ctx context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.C
 			} `json:"spec"`
 		} `json:"items"`
 	}
-	if err := k8sList(ctx, "v1", "externalsecrets", &es); err != nil {
+	if err := k8sList(ctx, "v1", "externalsecrets", &externalSecrets); err != nil {
 		return nil, unusedOut{}, err
 	}
-	for _, e := range es.Items {
-		for _, d := range e.Spec.Data {
-			used[norm(d.RemoteRef.Key)] = true
+	for _, es := range externalSecrets.Items {
+		for _, d := range es.Spec.Data {
+			used[normalizeKey(d.RemoteRef.Key)] = true
 		}
-		for _, d := range e.Spec.DataFrom {
+		for _, d := range es.Spec.DataFrom {
 			if d.Extract != nil {
-				used[norm(d.Extract.Key)] = true
+				used[normalizeKey(d.Extract.Key)] = true
 			}
 		}
 	}
-	var ps struct {
+	var pushSecrets struct {
 		Items []struct {
 			Spec struct {
 				Data []struct {
@@ -211,22 +231,22 @@ func findUnused(ctx context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.C
 			} `json:"spec"`
 		} `json:"items"`
 	}
-	if err := k8sList(ctx, "v1alpha1", "pushsecrets", &ps); err != nil {
+	if err := k8sList(ctx, "v1alpha1", "pushsecrets", &pushSecrets); err != nil {
 		return nil, unusedOut{}, err
 	}
-	for _, p := range ps.Items {
-		for _, d := range p.Spec.Data {
-			used[norm(d.Match.RemoteRef.RemoteKey)] = true
+	for _, ps := range pushSecrets.Items {
+		for _, d := range ps.Spec.Data {
+			used[normalizeKey(d.Match.RemoteRef.RemoteKey)] = true
 		}
 	}
-	all, err := items(ctx, "/")
+	all, err := listAkeylessItems(ctx, "/")
 	if err != nil {
 		return nil, unusedOut{}, err
 	}
 	out := unusedOut{TotalItems: len(all), ReferencedKeys: len(used), Unused: []item{}}
-	for _, i := range all {
-		if !used[norm(i.Name)] {
-			out.Unused = append(out.Unused, i)
+	for _, it := range all {
+		if !used[normalizeKey(it.Name)] {
+			out.Unused = append(out.Unused, it)
 		}
 	}
 	return nil, out, nil
@@ -242,7 +262,8 @@ func main() {
 		Name:        "find_unused_secrets",
 		Description: "Compare every Akeyless item under / with the keys referenced by ExternalSecrets and PushSecrets in the cluster, and return the items nothing references.",
 	}, findUnused)
-	handler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, &mcp.StreamableHTTPOptions{Stateless: true})
-	http.Handle("/mcp", handler)
-	log.Fatal(http.ListenAndServe(":8080", nil))
+	mux := http.NewServeMux()
+	mux.Handle("/mcp", mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, &mcp.StreamableHTTPOptions{Stateless: true}))
+	srv := &http.Server{Addr: ":8080", Handler: mux, ReadHeaderTimeout: 10 * time.Second}
+	log.Fatal(srv.ListenAndServe())
 }
