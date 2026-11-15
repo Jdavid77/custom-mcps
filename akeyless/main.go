@@ -79,7 +79,7 @@ func main() {
 	}, listItems)
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "find_unused_secrets",
-		Description: "Compare every Akeyless item under / with the keys referenced by ExternalSecrets and PushSecrets in the cluster, and return the items nothing references.",
+		Description: "Compare every Akeyless item under / with the keys referenced by ExternalSecrets in the cluster, and return the items nothing references.",
 	}, findUnused)
 	mux := http.NewServeMux()
 	mux.Handle("/mcp", mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, &mcp.StreamableHTTPOptions{Stateless: true}))

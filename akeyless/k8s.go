@@ -61,7 +61,7 @@ func normalizeKey(key string) string {
 	return "/" + strings.TrimLeft(key, "/")
 }
 
-// usedKeys returns the Akeyless keys referenced by ExternalSecrets and PushSecrets.
+// usedKeys returns the Akeyless keys referenced by ExternalSecrets.
 func usedKeys(ctx context.Context) (map[string]bool, error) {
 	used := map[string]bool{}
 	var externalSecrets struct {
@@ -91,27 +91,6 @@ func usedKeys(ctx context.Context) (map[string]bool, error) {
 			if d.Extract != nil {
 				used[normalizeKey(d.Extract.Key)] = true
 			}
-		}
-	}
-	var pushSecrets struct {
-		Items []struct {
-			Spec struct {
-				Data []struct {
-					Match struct {
-						RemoteRef struct {
-							RemoteKey string `json:"remoteKey"`
-						} `json:"remoteRef"`
-					} `json:"match"`
-				} `json:"data"`
-			} `json:"spec"`
-		} `json:"items"`
-	}
-	if err := k8sList(ctx, "v1alpha1", "pushsecrets", &pushSecrets); err != nil {
-		return nil, err
-	}
-	for _, ps := range pushSecrets.Items {
-		for _, d := range ps.Spec.Data {
-			used[normalizeKey(d.Match.RemoteRef.RemoteKey)] = true
 		}
 	}
 	return used, nil
