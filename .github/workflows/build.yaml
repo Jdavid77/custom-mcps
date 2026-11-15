@@ -6,14 +6,33 @@ on:
   pull_request:
 
 jobs:
+  changes:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      mcps: ${{ steps.filter.outputs.changes }}
+    steps:
+      - uses: actions/checkout@v5
+      # One filter per MCP; shared build files rebuild all of them
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            akeyless: [akeyless/**, go.mod, go.sum, Dockerfile]
+            pushover: [pushover/**, go.mod, go.sum, Dockerfile]
+
   build:
+    needs: changes
+    if: needs.changes.outputs.mcps != '[]'
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
     strategy:
       matrix:
-        mcp: [akeyless, pushover]
+        mcp: ${{ fromJSON(needs.changes.outputs.mcps) }}
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-go@v6
