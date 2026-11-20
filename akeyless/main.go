@@ -43,32 +43,40 @@ func listItems(ctx context.Context, _ *mcp.CallToolRequest, in listIn) (*mcp.Cal
 	if in.Path == "" {
 		in.Path = "/"
 	}
-	found, err := listAkeylessItems(ctx, in.Path)
+	store, err := newAkeylessStore(ctx)
+	if err != nil {
+		return nil, listOut{}, err
+	}
+	found, err := store.List(ctx, in.Path)
 	return nil, listOut{Items: found}, err
 }
 
-type unusedOut struct {
-	TotalItems     int    `json:"total_items"`
-	ReferencedKeys int    `json:"referenced_keys"`
-	Unused         []item `json:"unused"`
+// newAudit logs in to Akeyless once, for the length of one tool call.
+func newAudit(ctx context.Context) (audit, error) {
+	store, err := newAkeylessStore(ctx)
+	return audit{store: store, refs: externalSecretRefs{}}, err
 }
 
-func findUnused(ctx context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, unusedOut, error) {
-	used, err := usedKeys(ctx)
+func findUnused(ctx context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, unusedReport, error) {
+	a, err := newAudit(ctx)
 	if err != nil {
-		return nil, unusedOut{}, err
+		return nil, unusedReport{}, err
 	}
-	all, err := listAkeylessItems(ctx, "/")
+	report, err := a.Unused(ctx)
+	return nil, report, err
+}
+
+type deleteIn struct {
+	Names []string `json:"names" jsonschema:"item names returned by find_unused_secrets"`
+}
+
+func deleteUnused(ctx context.Context, _ *mcp.CallToolRequest, in deleteIn) (*mcp.CallToolResult, deleteReport, error) {
+	a, err := newAudit(ctx)
 	if err != nil {
-		return nil, unusedOut{}, err
+		return nil, deleteReport{}, err
 	}
-	out := unusedOut{TotalItems: len(all), ReferencedKeys: len(used), Unused: []item{}}
-	for _, it := range all {
-		if !used[normalizeKey(it.Name)] {
-			out.Unused = append(out.Unused, it)
-		}
-	}
-	return nil, out, nil
+	report, err := a.DeleteUnused(ctx, in.Names)
+	return nil, report, err
 }
 
 func main() {
@@ -79,8 +87,12 @@ func main() {
 	}, listItems)
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "find_unused_secrets",
-		Description: "Compare every Akeyless item under / with the keys referenced by ExternalSecrets in the cluster, and return the items nothing references.",
+		Description: "Compare every Akeyless item under / with the keys referenced by ExternalSecrets in the cluster, and return the items nothing references. Items under /cert-manager/ come back with protected: true, since they may be used outside the cluster, and delete_unused_secrets never deletes them.",
 	}, findUnused)
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "delete_unused_secrets",
+		Description: "Delete, in one call, Akeyless items that find_unused_secrets reports as unused. The server checks each name again first and skips any that an ExternalSecret references, that does not exist, or that is under /cert-manager/. Treat deletion as permanent.",
+	}, deleteUnused)
 	mux := http.NewServeMux()
 	mux.Handle("/mcp", mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, &mcp.StreamableHTTPOptions{Stateless: true}))
 	srv := &http.Server{Addr: ":8080", Handler: mux, ReadHeaderTimeout: 10 * time.Second}

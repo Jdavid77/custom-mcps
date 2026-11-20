@@ -5,8 +5,10 @@ import (
 	"cmp"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 )
 
@@ -28,9 +30,11 @@ func akeylessPost(ctx context.Context, endpoint string, body, out any) error {
 	return send(akeylessClient, req, out)
 }
 
-// listAkeylessItems lists every Akeyless item under path, in API order.
-// list-items returns one folder level (items + subfolders), so walk the tree.
-func listAkeylessItems(ctx context.Context, path string) ([]item, error) {
+// akeylessStore is a secretStore backed by the Akeyless API, logged in once
+// with the API key from the environment.
+type akeylessStore struct{ token string }
+
+func newAkeylessStore(ctx context.Context) (akeylessStore, error) {
 	var auth struct {
 		Token string `json:"token"`
 	}
@@ -39,9 +43,21 @@ func listAkeylessItems(ctx context.Context, path string) ([]item, error) {
 		"access-id":   os.Getenv("AKEYLESS_ACCESS_ID"),
 		"access-key":  os.Getenv("AKEYLESS_ACCESS_KEY"),
 	}, &auth)
-	if err != nil {
-		return nil, err
+	return akeylessStore{auth.Token}, err
+}
+
+// Delete refuses protected items itself, so no caller can delete them even if
+// it skips the audit's checks.
+func (s akeylessStore) Delete(ctx context.Context, name string) error {
+	if strings.HasPrefix(normalizeKey(name), protectedPrefix) {
+		return fmt.Errorf("refusing to delete protected item %s", name)
 	}
+	return akeylessPost(ctx, "/delete-item", map[string]string{"token": s.token, "name": name}, &struct{}{})
+}
+
+// List lists every Akeyless item under path, in API order.
+// list-items returns one folder level (items + subfolders), so walk the tree.
+func (s akeylessStore) List(ctx context.Context, path string) ([]item, error) {
 	var found []item
 	foundNames := map[string]bool{}
 	// queued holds every folder ever pushed, so a folder is walked once
@@ -51,7 +67,7 @@ func listAkeylessItems(ctx context.Context, path string) ([]item, error) {
 		pending = pending[:len(pending)-1]
 		pageToken := ""
 		for {
-			body := map[string]string{"token": auth.Token, "path": folder}
+			body := map[string]string{"token": s.token, "path": folder}
 			if pageToken != "" {
 				body["pagination-token"] = pageToken
 			}

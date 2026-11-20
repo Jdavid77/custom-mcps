@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"net/http"
 	"os"
-	"strings"
 	"sync"
 	"time"
 )
@@ -57,12 +56,10 @@ func k8sList(ctx context.Context, version, resource string, out any) error {
 	return send(c, req, out)
 }
 
-func normalizeKey(key string) string {
-	return "/" + strings.TrimLeft(key, "/")
-}
+// externalSecretRefs is a referenceSource reading the keys ExternalSecrets point at.
+type externalSecretRefs struct{}
 
-// usedKeys returns the Akeyless keys referenced by ExternalSecrets.
-func usedKeys(ctx context.Context) (map[string]bool, error) {
+func (externalSecretRefs) Keys(ctx context.Context) (map[string]bool, error) {
 	used := map[string]bool{}
 	var externalSecrets struct {
 		Items []struct {
@@ -85,11 +82,11 @@ func usedKeys(ctx context.Context) (map[string]bool, error) {
 	}
 	for _, es := range externalSecrets.Items {
 		for _, d := range es.Spec.Data {
-			used[normalizeKey(d.RemoteRef.Key)] = true
+			used[d.RemoteRef.Key] = true
 		}
 		for _, d := range es.Spec.DataFrom {
 			if d.Extract != nil {
-				used[normalizeKey(d.Extract.Key)] = true
+				used[d.Extract.Key] = true
 			}
 		}
 	}
