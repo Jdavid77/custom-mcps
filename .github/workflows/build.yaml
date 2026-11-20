@@ -52,6 +52,9 @@ jobs:
           version: v2.15.0
           args: ./${{ matrix.mcp }}/...
 
+      - name: Test
+        run: go test ./${{ matrix.mcp }}/...
+
       # The image's own tags hold the counter, so each MCP counts separately and no git tags are needed
       - name: Latest image tag
         id: latest
