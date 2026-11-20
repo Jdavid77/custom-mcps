@@ -43,7 +43,7 @@ Sends notifications through [Pushover](https://pushover.net).
 
 | Tool | What it does |
 |---|---|
-| `send_notification` | Sends a `title` and `message` (cut to Pushover's 250 / 1024 character limits) |
+| `send_notification` | Sends a `title` and `message` (cut to Pushover's 250 / 1024 character limits). The message is sent with Pushover's HTML formatting on |
 
 | Env | |
 |---|---|
