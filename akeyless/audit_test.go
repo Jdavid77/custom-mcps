@@ -10,14 +10,16 @@ import (
 )
 
 type fakeStore struct {
-	items   []item
-	listErr error
-	failOn  map[string]bool
-	deleted []string
+	items          []item
+	folders        []string
+	listErr        error
+	failOn         map[string]bool
+	deleted        []string
+	deletedFolders []string
 }
 
-func (f *fakeStore) List(context.Context, string) ([]item, error) {
-	return f.items, f.listErr
+func (f *fakeStore) List(context.Context, string) ([]item, []string, error) {
+	return f.items, f.folders, f.listErr
 }
 
 func (f *fakeStore) Delete(_ context.Context, name string) error {
@@ -25,6 +27,14 @@ func (f *fakeStore) Delete(_ context.Context, name string) error {
 		return errors.New("denied")
 	}
 	f.deleted = append(f.deleted, name)
+	return nil
+}
+
+func (f *fakeStore) DeleteFolder(_ context.Context, name string) error {
+	if f.failOn[name] {
+		return errors.New("denied")
+	}
+	f.deletedFolders = append(f.deletedFolders, name)
 	return nil
 }
 
@@ -177,5 +187,89 @@ func TestAkeylessStoreRefusesProtected(t *testing.T) {
 	}
 	if err := store.Delete(context.Background(), "/apps/orphan"); err != nil || calls != 1 {
 		t.Errorf("Delete of unprotected item: err=%v calls=%d, want nil/1", err, calls)
+	}
+}
+
+func TestEmptyFolders(t *testing.T) {
+	store := &fakeStore{
+		items:   items("/apps/used", "/cert-manager/cf"),
+		folders: []string{"/", "/apps", "/apps/old", "/apps/old/deeper", "/gone/", "/cert-manager", "/cert-manager/empty"},
+	}
+	report, err := audit{store, fakeRefs{}}.EmptyFolders(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"/apps/old/deeper", "/apps/old", "/gone/"}
+	if !slices.Equal(report.Folders, want) {
+		t.Errorf("empty folders = %v, want %v", report.Folders, want)
+	}
+}
+
+func TestDeleteEmptyFolders(t *testing.T) {
+	store := &fakeStore{
+		items:   items("/apps/used"),
+		folders: []string{"/apps", "/apps/old", "/apps/old/deeper", "/cert-manager"},
+		failOn:  map[string]bool{},
+	}
+	out, err := audit{store, fakeRefs{}}.DeleteEmptyFolders(context.Background(),
+		[]string{"/apps/old", "apps/old/deeper", "/apps", "/cert-manager", "/", "/apps/old"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// deepest first, so a parent is only removed after its children
+	if want := []string{"/apps/old/deeper", "/apps/old"}; !slices.Equal(store.deletedFolders, want) {
+		t.Errorf("store deleted %v, want %v", store.deletedFolders, want)
+	}
+	if want := []string{"/apps/old/deeper", "/apps/old"}; !slices.Equal(out.Deleted, want) {
+		t.Errorf("deleted = %v, want %v", out.Deleted, want)
+	}
+	if got, want := names(out.Skipped), []string{"/apps/old", "/apps", "/cert-manager", "/"}; !slices.Equal(got, want) {
+		t.Errorf("skipped = %v, want %v", got, want)
+	}
+}
+
+func TestDeleteEmptyFoldersDeletesNothingOnError(t *testing.T) {
+	store := &fakeStore{folders: []string{"/apps/old"}, listErr: errors.New("akeyless down")}
+	if _, err := (audit{store, fakeRefs{}}).DeleteEmptyFolders(context.Background(), []string{"/apps/old"}); err == nil {
+		t.Fatal("want error")
+	}
+	if len(store.deletedFolders) != 0 {
+		t.Errorf("deleted %v, want nothing", store.deletedFolders)
+	}
+}
+
+func TestAkeylessStoreDeleteFolderGuards(t *testing.T) {
+	var deletes int
+	listing := `{"items":[{"item_name":"/apps/old/x","item_type":"STATIC_SECRET"}]}`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/list-items":
+			_, _ = w.Write([]byte(listing))
+		case "/folder-delete":
+			deletes++
+			_, _ = w.Write([]byte("{}"))
+		}
+	}))
+	defer srv.Close()
+	old := akeylessAPI
+	akeylessAPI = srv.URL
+	defer func() { akeylessAPI = old }()
+
+	store := akeylessStore{token: "t"}
+	for _, name := range []string{"/", "", "/cert-manager", "cert-manager/", "/cert-manager/sub", "/apps/old"} {
+		if err := store.DeleteFolder(context.Background(), name); err == nil {
+			t.Errorf("DeleteFolder(%q) succeeded, want refusal", name)
+		}
+	}
+	listing = `{"items":[],"folders":["/apps/old/sub"]}`
+	if err := store.DeleteFolder(context.Background(), "/apps/old"); err == nil {
+		t.Error("DeleteFolder with a subfolder succeeded, want refusal")
+	}
+	if deletes != 0 {
+		t.Fatalf("store sent %d folder deletes, want none", deletes)
+	}
+	listing = `{"items":[],"folders":[]}`
+	if err := store.DeleteFolder(context.Background(), "/apps/old"); err != nil || deletes != 1 {
+		t.Errorf("DeleteFolder of empty folder: err=%v deletes=%d, want nil/1", err, deletes)
 	}
 }

@@ -47,7 +47,7 @@ func listItems(ctx context.Context, _ *mcp.CallToolRequest, in listIn) (*mcp.Cal
 	if err != nil {
 		return nil, listOut{}, err
 	}
-	found, err := store.List(ctx, in.Path)
+	found, _, err := store.List(ctx, in.Path)
 	return nil, listOut{Items: found}, err
 }
 
@@ -79,6 +79,28 @@ func deleteUnused(ctx context.Context, _ *mcp.CallToolRequest, in deleteIn) (*mc
 	return nil, report, err
 }
 
+func findEmptyFolders(ctx context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, emptyFoldersReport, error) {
+	a, err := newAudit(ctx)
+	if err != nil {
+		return nil, emptyFoldersReport{}, err
+	}
+	report, err := a.EmptyFolders(ctx)
+	return nil, report, err
+}
+
+type deleteFoldersIn struct {
+	Names []string `json:"names" jsonschema:"folder names returned by find_empty_folders"`
+}
+
+func deleteEmptyFolders(ctx context.Context, _ *mcp.CallToolRequest, in deleteFoldersIn) (*mcp.CallToolResult, deleteReport, error) {
+	a, err := newAudit(ctx)
+	if err != nil {
+		return nil, deleteReport{}, err
+	}
+	report, err := a.DeleteEmptyFolders(ctx, in.Names)
+	return nil, report, err
+}
+
 func main() {
 	server := mcp.NewServer(&mcp.Implementation{Name: "akeyless"}, nil)
 	mcp.AddTool(server, &mcp.Tool{
@@ -93,6 +115,14 @@ func main() {
 		Name:        "delete_unused_secrets",
 		Description: "Delete, in one call, Akeyless items that find_unused_secrets reports as unused. The server checks each name again first and skips any that an ExternalSecret references, that does not exist, or that is under /cert-manager/. Treat deletion as permanent.",
 	}, deleteUnused)
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "find_empty_folders",
+		Description: "Return the Akeyless folders that hold no item at any depth, deepest first. / and folders under /cert-manager are never listed.",
+	}, findEmptyFolders)
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "delete_empty_folders",
+		Description: "Delete, in one call, Akeyless folders that find_empty_folders reports, deepest first. The server checks each folder again and skips any that is not empty, does not exist, is / or is under /cert-manager.",
+	}, deleteEmptyFolders)
 	mux := http.NewServeMux()
 	mux.Handle("/mcp", mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, &mcp.StreamableHTTPOptions{Stateless: true}))
 	srv := &http.Server{Addr: ":8080", Handler: mux, ReadHeaderTimeout: 10 * time.Second}

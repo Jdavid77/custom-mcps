@@ -22,10 +22,12 @@ Lists [Akeyless](https://www.akeyless.io) item names (never values), finds the o
 | `list_items` | Lists item names and types under a path (default `/`), walking subfolders |
 | `find_unused_secrets` | Returns the items under `/` that no ExternalSecret references, marking those under `/cert-manager/` as `protected` (used outside the cluster) |
 | `delete_unused_secrets` | Deletes a list of names in one call, skipping any that `find_unused_secrets` doesn't report as unused right now and anything `protected` |
+| `find_empty_folders` | Returns the folders with no item at any depth, deepest first, leaving out `/` and `/cert-manager` |
+| `delete_empty_folders` | Deletes a list of folders in one call, deepest first, skipping any that isn't empty right now, `/` and `/cert-manager`. Before each delete it lists the folder again and refuses if anything is in it |
 
 | Env | |
 |---|---|
-| `AKEYLESS_ACCESS_ID` | Access ID of an API key with `list` on the paths to scan, plus `delete` for `delete_unused_secrets` |
+| `AKEYLESS_ACCESS_ID` | Access ID of an API key with `list` on the paths to scan, plus `delete` for `delete_unused_secrets` and `delete_empty_folders` |
 | `AKEYLESS_ACCESS_KEY` | Its access key |
 | `AKEYLESS_API_URL` | Optional, defaults to `https://api.akeyless.io` |
 

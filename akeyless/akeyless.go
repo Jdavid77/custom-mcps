@@ -55,10 +55,32 @@ func (s akeylessStore) Delete(ctx context.Context, name string) error {
 	return akeylessPost(ctx, "/delete-item", map[string]string{"token": s.token, "name": name}, &struct{}{})
 }
 
-// List lists every Akeyless item under path, in API order.
+// DeleteFolder refuses /, protected folders and any folder that still holds
+// an item or subfolder, since the API docs do not say whether folder-delete
+// removes a folder's contents.
+func (s akeylessStore) DeleteFolder(ctx context.Context, name string) error {
+	folder := normalizeFolder(name)
+	if folder == "" || protectedFolder(folder) {
+		return fmt.Errorf("refusing to delete protected folder %q", name)
+	}
+	var page struct {
+		Items   []json.RawMessage `json:"items"`
+		Folders []string          `json:"folders"`
+	}
+	if err := akeylessPost(ctx, "/list-items", map[string]string{"token": s.token, "path": name}, &page); err != nil {
+		return err
+	}
+	if len(page.Items) > 0 || len(page.Folders) > 0 {
+		return fmt.Errorf("refusing to delete folder %s: it is not empty", name)
+	}
+	return akeylessPost(ctx, "/folder-delete", map[string]string{"token": s.token, "name": name}, &struct{}{})
+}
+
+// List lists every Akeyless item and folder under path, in API order.
 // list-items returns one folder level (items + subfolders), so walk the tree.
-func (s akeylessStore) List(ctx context.Context, path string) ([]item, error) {
+func (s akeylessStore) List(ctx context.Context, path string) ([]item, []string, error) {
 	var found []item
+	var folders []string
 	foundNames := map[string]bool{}
 	// queued holds every folder ever pushed, so a folder is walked once
 	pending, queued := []string{path}, map[string]bool{path: true}
@@ -80,7 +102,7 @@ func (s akeylessStore) List(ctx context.Context, path string) ([]item, error) {
 				NextPage string   `json:"next_page"`
 			}
 			if err := akeylessPost(ctx, "/list-items", body, &page); err != nil {
-				return nil, err
+				return nil, nil, err
 			}
 			added := false
 			for _, it := range page.Items {
@@ -93,6 +115,7 @@ func (s akeylessStore) List(ctx context.Context, path string) ([]item, error) {
 			for _, sub := range page.Folders {
 				if !queued[sub] {
 					queued[sub] = true
+					folders = append(folders, sub)
 					pending = append(pending, sub)
 					added = true
 				}
@@ -104,5 +127,5 @@ func (s akeylessStore) List(ctx context.Context, path string) ([]item, error) {
 			}
 		}
 	}
-	return found, nil
+	return found, folders, nil
 }
