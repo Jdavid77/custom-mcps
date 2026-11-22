@@ -136,7 +136,7 @@ func logDeletes(ctx context.Context, kind string, requested []string, report del
 }
 
 func main() {
-	server := mcp.NewServer(&mcp.Implementation{Name: "akeyless"}, &mcp.ServerOptions{Logger: logger})
+	server := mcp.NewServer(&mcp.Implementation{Name: "akeyless"}, &mcp.ServerOptions{Logger: mcplog.SDK("akeyless")})
 	server.AddReceivingMiddleware(mcplog.Middleware(logger))
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "list_items",
@@ -159,7 +159,7 @@ func main() {
 		Description: "Delete, in one call, Akeyless folders that find_empty_folders reports, deepest first. The server checks each folder again and skips any that is not empty, does not exist, is / or is under /cert-manager.",
 	}, deleteEmptyFolders)
 	mux := http.NewServeMux()
-	mux.Handle("/mcp", mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, &mcp.StreamableHTTPOptions{Stateless: true, Logger: logger}))
+	mux.Handle("/mcp", mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, &mcp.StreamableHTTPOptions{Stateless: true, Logger: mcplog.SDK("akeyless")}))
 	srv := &http.Server{Addr: ":8080", Handler: mux, ReadHeaderTimeout: 10 * time.Second}
 	logger.Info("listening", "addr", srv.Addr)
 	logger.Error("server stopped", "error", srv.ListenAndServe())

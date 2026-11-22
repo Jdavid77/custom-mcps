@@ -17,11 +17,30 @@ import (
 // New returns a JSON logger tagged with the MCP's name. LOG_LEVEL (debug,
 // info, warn, error) sets the level, info by default.
 func New(name string) *slog.Logger {
-	var level slog.Level
-	if err := level.UnmarshalText([]byte(strings.TrimSpace(os.Getenv("LOG_LEVEL")))); err != nil {
-		level = slog.LevelInfo
+	return newLogger(name, level())
+}
+
+// SDK returns the logger to give the go-sdk. In stateless mode the SDK logs a
+// session connect and disconnect at info for every request, health probes
+// included, so below debug it only keeps the SDK's warnings and errors.
+func SDK(name string) *slog.Logger {
+	l := level()
+	if l > slog.LevelDebug && l < slog.LevelWarn {
+		l = slog.LevelWarn
 	}
-	h := slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: level})
+	return newLogger(name, l)
+}
+
+func level() slog.Level {
+	var l slog.Level
+	if err := l.UnmarshalText([]byte(strings.TrimSpace(os.Getenv("LOG_LEVEL")))); err != nil {
+		return slog.LevelInfo
+	}
+	return l
+}
+
+func newLogger(name string, l slog.Level) *slog.Logger {
+	h := slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: l})
 	return slog.New(h).With("mcp", name)
 }
 

@@ -80,14 +80,14 @@ func send(ctx context.Context, _ *mcp.CallToolRequest, in notification) (*mcp.Ca
 }
 
 func main() {
-	server := mcp.NewServer(&mcp.Implementation{Name: "pushover"}, &mcp.ServerOptions{Logger: logger})
+	server := mcp.NewServer(&mcp.Implementation{Name: "pushover"}, &mcp.ServerOptions{Logger: mcplog.SDK("pushover")})
 	server.AddReceivingMiddleware(mcplog.Middleware(logger))
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "send_notification",
 		Description: "Send a push notification to the cluster owner's phone via Pushover. The message is rendered as Pushover HTML: only <b>, <i>, <u>, <font color=\"#rrggbb\"> and <a href=\"...\"> work, newlines are kept, and a literal <, > or & must be written as &lt;, &gt; or &amp;. Markdown is not rendered.",
 	}, send)
 	mux := http.NewServeMux()
-	mux.Handle("/mcp", mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, &mcp.StreamableHTTPOptions{Stateless: true, Logger: logger}))
+	mux.Handle("/mcp", mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, &mcp.StreamableHTTPOptions{Stateless: true, Logger: mcplog.SDK("pushover")}))
 	srv := &http.Server{Addr: ":8080", Handler: mux, ReadHeaderTimeout: 10 * time.Second}
 	logger.Info("listening", "addr", srv.Addr)
 	logger.Error("server stopped", "error", srv.ListenAndServe())
