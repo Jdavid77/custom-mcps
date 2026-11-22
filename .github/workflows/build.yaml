@@ -18,14 +18,14 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      # One filter per MCP; shared build files rebuild all of them
+      # One filter per MCP; shared build files and packages rebuild all of them
       - name: Detect changed MCPs
         uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
         id: filter
         with:
           filters: |
-            akeyless: [akeyless/**, go.mod, go.sum, Dockerfile]
-            pushover: [pushover/**, go.mod, go.sum, Dockerfile]
+            akeyless: [akeyless/**, internal/**, go.mod, go.sum, Dockerfile]
+            pushover: [pushover/**, internal/**, go.mod, go.sum, Dockerfile]
 
   build:
     needs: changes
@@ -50,10 +50,10 @@ jobs:
         uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
         with:
           version: v2.15.0
-          args: ./${{ matrix.mcp }}/...
+          args: ./${{ matrix.mcp }}/... ./internal/...
 
       - name: Test
-        run: go test ./${{ matrix.mcp }}/...
+        run: go test ./${{ matrix.mcp }}/... ./internal/...
 
       # The image's own tags hold the counter, so each MCP counts separately and no git tags are needed
       - name: Latest image tag

@@ -5,12 +5,16 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
+	"os"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+
+	"github.com/Jdavid77/custom-mcps/internal/mcplog"
 )
+
+var logger = mcplog.New("akeyless")
 
 type item struct {
 	Name string `json:"name"`
@@ -48,6 +52,9 @@ func listItems(ctx context.Context, _ *mcp.CallToolRequest, in listIn) (*mcp.Cal
 		return nil, listOut{}, err
 	}
 	found, _, err := store.List(ctx, in.Path)
+	if err == nil {
+		logger.InfoContext(ctx, "listed items", "path", in.Path, "count", len(found))
+	}
 	return nil, listOut{Items: found}, err
 }
 
@@ -63,6 +70,13 @@ func findUnused(ctx context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.C
 		return nil, unusedReport{}, err
 	}
 	report, err := a.Unused(ctx)
+	if err == nil {
+		names := make([]string, len(report.Unused))
+		for i, u := range report.Unused {
+			names[i] = u.Name
+		}
+		logger.InfoContext(ctx, "found unused secrets", "total_items", report.TotalItems, "referenced_keys", report.ReferencedKeys, "unused", names)
+	}
 	return nil, report, err
 }
 
@@ -76,6 +90,7 @@ func deleteUnused(ctx context.Context, _ *mcp.CallToolRequest, in deleteIn) (*mc
 		return nil, deleteReport{}, err
 	}
 	report, err := a.DeleteUnused(ctx, in.Names)
+	logDeletes(ctx, "item", in.Names, report)
 	return nil, report, err
 }
 
@@ -85,6 +100,9 @@ func findEmptyFolders(ctx context.Context, _ *mcp.CallToolRequest, _ struct{}) (
 		return nil, emptyFoldersReport{}, err
 	}
 	report, err := a.EmptyFolders(ctx)
+	if err == nil {
+		logger.InfoContext(ctx, "found empty folders", "folders", report.Folders)
+	}
 	return nil, report, err
 }
 
@@ -98,11 +116,28 @@ func deleteEmptyFolders(ctx context.Context, _ *mcp.CallToolRequest, in deleteFo
 		return nil, deleteReport{}, err
 	}
 	report, err := a.DeleteEmptyFolders(ctx, in.Names)
+	logDeletes(ctx, "folder", in.Names, report)
 	return nil, report, err
 }
 
+// logDeletes writes one line per name, so the logs keep an audit trail of what an agent asked to delete and
+// what happened to each name. Deletions are logged at warn, since they cannot be undone
+func logDeletes(ctx context.Context, kind string, requested []string, report deleteReport) {
+	logger.InfoContext(ctx, "delete requested", "kind", kind, "names", requested)
+	for _, name := range report.Deleted {
+		logger.WarnContext(ctx, "deleted", "kind", kind, "name", name)
+	}
+	for _, s := range report.Skipped {
+		logger.InfoContext(ctx, "delete skipped", "kind", kind, "name", s.Name, "reason", s.Reason)
+	}
+	for _, f := range report.Failed {
+		logger.ErrorContext(ctx, "delete failed", "kind", kind, "name", f.Name, "error", f.Reason)
+	}
+}
+
 func main() {
-	server := mcp.NewServer(&mcp.Implementation{Name: "akeyless"}, nil)
+	server := mcp.NewServer(&mcp.Implementation{Name: "akeyless"}, &mcp.ServerOptions{Logger: logger})
+	server.AddReceivingMiddleware(mcplog.Middleware(logger))
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "list_items",
 		Description: "List Akeyless item names (not values) under a path, including subfolders.",
@@ -124,7 +159,9 @@ func main() {
 		Description: "Delete, in one call, Akeyless folders that find_empty_folders reports, deepest first. The server checks each folder again and skips any that is not empty, does not exist, is / or is under /cert-manager.",
 	}, deleteEmptyFolders)
 	mux := http.NewServeMux()
-	mux.Handle("/mcp", mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, &mcp.StreamableHTTPOptions{Stateless: true}))
+	mux.Handle("/mcp", mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, &mcp.StreamableHTTPOptions{Stateless: true, Logger: logger}))
 	srv := &http.Server{Addr: ":8080", Handler: mux, ReadHeaderTimeout: 10 * time.Second}
-	log.Fatal(srv.ListenAndServe())
+	logger.Info("listening", "addr", srv.Addr)
+	logger.Error("server stopped", "error", srv.ListenAndServe())
+	os.Exit(1)
 }
