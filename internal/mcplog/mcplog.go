@@ -55,14 +55,15 @@ func Middleware(logger *slog.Logger) mcp.Middleware {
 			res, err := next(ctx, method, req)
 			attrs := []slog.Attr{
 				slog.String("method", method),
-				slog.Duration("duration", time.Since(start)),
+				slog.Int64("duration_ms", time.Since(start).Milliseconds()),
 			}
 			level := slog.LevelDebug
 			if p, ok := req.GetParams().(*mcp.CallToolParamsRaw); ok {
 				attrs = append(attrs, slog.String("tool", p.Name))
 				level = slog.LevelInfo
 			}
-			if r, ok := res.(*mcp.CallToolResult); ok && r.IsError {
+			// A protocol error (an unknown tool, say) comes back as a nil *CallToolResult with err set
+			if r, ok := res.(*mcp.CallToolResult); ok && r != nil && r.IsError {
 				level = slog.LevelError
 				attrs = append(attrs, slog.String("error", toolError(r)))
 			}

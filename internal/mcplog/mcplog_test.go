@@ -13,8 +13,9 @@ import (
 )
 
 // callTool runs one tools/call through a server using Middleware and returns
-// the log lines it wrote for tools/call.
-func callTool(t *testing.T, name string) []map[string]any {
+// the one log line it wrote for tools/call. A failed call is not a test
+// failure, since some tests call tools that fail on purpose.
+func callTool(t *testing.T, name string) map[string]any {
 	t.Helper()
 	ctx := context.Background()
 	var buf bytes.Buffer
@@ -38,9 +39,7 @@ func callTool(t *testing.T, name string) []map[string]any {
 		t.Fatal(err)
 	}
 	defer func() { _ = cs.Close() }()
-	if _, err := cs.CallTool(ctx, &mcp.CallToolParams{Name: name}); err != nil {
-		t.Fatal(err)
-	}
+	_, _ = cs.CallTool(ctx, &mcp.CallToolParams{Name: name})
 
 	var lines []map[string]any
 	for _, l := range strings.Split(strings.TrimSpace(buf.String()), "\n") {
@@ -55,22 +54,31 @@ func callTool(t *testing.T, name string) []map[string]any {
 	if len(lines) != 1 {
 		t.Fatalf("want one tools/call line, got %d: %s", len(lines), buf.String())
 	}
-	return lines
+	return lines[0]
 }
 
 func TestMiddlewareLogsToolCall(t *testing.T) {
-	line := callTool(t, "ok")[0]
+	line := callTool(t, "ok")
 	if line["level"] != "INFO" || line["tool"] != "ok" || line["error"] != nil {
 		t.Errorf("unexpected line: %v", line)
 	}
-	if _, ok := line["duration"]; !ok {
-		t.Errorf("no duration: %v", line)
+	if _, ok := line["duration_ms"]; !ok {
+		t.Errorf("no duration_ms: %v", line)
 	}
 }
 
 func TestMiddlewareLogsFailedToolAsError(t *testing.T) {
-	line := callTool(t, "fails")[0]
+	line := callTool(t, "fails")
 	if line["level"] != "ERROR" || line["tool"] != "fails" || !strings.Contains(line["error"].(string), "akeyless returned 401") {
+		t.Errorf("unexpected line: %v", line)
+	}
+}
+
+// An unknown tool is a protocol error: the SDK hands the middleware a nil
+// *CallToolResult, which must be logged, not dereferenced
+func TestMiddlewareLogsUnknownTool(t *testing.T) {
+	line := callTool(t, "nope")
+	if line["level"] != "ERROR" || line["tool"] != "nope" || line["error"] == nil {
 		t.Errorf("unexpected line: %v", line)
 	}
 }

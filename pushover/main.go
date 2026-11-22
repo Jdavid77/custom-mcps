@@ -41,7 +41,7 @@ func send(ctx context.Context, _ *mcp.CallToolRequest, in notification) (*mcp.Ca
 	title, message := truncate(in.Title, 250), truncate(in.Message, 1024)
 	// The message is logged as sent, so a notification that renders badly on the phone can be compared with
 	// what the agent wrote
-	log := logger.With(
+	sendLog := logger.With(
 		"title", title,
 		"message", message,
 		"message_length", len([]rune(in.Message)),
@@ -61,13 +61,13 @@ func send(ctx context.Context, _ *mcp.CallToolRequest, in notification) (*mcp.Ca
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	resp, err := client.Do(req)
 	if err != nil {
-		log.ErrorContext(ctx, "notification not sent", "error", err)
+		sendLog.ErrorContext(ctx, "notification not sent", "error", err)
 		return nil, result{}, err
 	}
 	defer func() { _ = resp.Body.Close() }()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 500))
 	if resp.StatusCode != http.StatusOK {
-		log.ErrorContext(ctx, "notification not sent", "status", resp.StatusCode, "response", string(body))
+		sendLog.ErrorContext(ctx, "notification not sent", "status", resp.StatusCode, "response", string(body))
 		return nil, result{}, fmt.Errorf("pushover returned %d: %s", resp.StatusCode, body)
 	}
 	// Pushover's request ID is what its support and its API ask for when tracing a message
@@ -75,7 +75,7 @@ func send(ctx context.Context, _ *mcp.CallToolRequest, in notification) (*mcp.Ca
 		Request string `json:"request"`
 	}
 	_ = json.Unmarshal(body, &sent)
-	log.InfoContext(ctx, "notification sent", "pushover_request", sent.Request)
+	sendLog.InfoContext(ctx, "notification sent", "pushover_request", sent.Request)
 	return nil, result{Status: "sent"}, nil
 }
 
